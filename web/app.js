@@ -127,7 +127,7 @@ async function initialize() {
   datalist.replaceChildren(...manifest.symbols.map(symbol => Object.assign(document.createElement('option'), { value: symbol })));
   pyodide = await loadPyodide();
   await pyodide.loadPackage(['numpy', 'pandas']);
-  const files = ['__init__.py', 'runtime.py', 'signals.py', 'indicators.py', 'auxiliary_tree_model.py', 'causal_auxiliary_features.py', 'causal_auxiliary_tree_model.py', 'auxiliary_signals.py', 'zigzag_signals.py'];
+  const files = ['__init__.py', 'runtime.py', 'signals.py', 'indicators.py', 'auxiliary_tree_model.py', 'causal_auxiliary_features.py', 'causal_auxiliary_tree_model.py', 'auxiliary_signals.py', 'monotonic_zigzag.py', 'zigzag_signals.py'];
   pyodide.FS.mkdirTree('/home/pyodide/s1demo');
   await Promise.all(files.map(async name => {
     const source = await fetch(`./python/s1demo/${name}`).then(fileResponse => {

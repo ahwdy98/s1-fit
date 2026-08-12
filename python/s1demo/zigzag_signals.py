@@ -5,8 +5,13 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from .auxiliary_signals import FormulaAuxiliaryConfig, generate_auxiliary_signals, generate_formula_auxiliary_signals
+from .auxiliary_signals import (
+    FormulaAuxiliaryConfig,
+    generate_auxiliary_signals,
+    generate_formula_auxiliary_signals,
+)
 from .signals import append_signal, build_signal_reason
+from .monotonic_zigzag import generate_monotonic_candidates
 
 
 @dataclass(frozen=True)
@@ -30,6 +35,7 @@ class ZigZagSignalConfig:
     turning_sell_max_end_gap: int = 10
     auxiliary_mode: str = "tree"
     formula_auxiliary_profile: str = "exact"
+    monotonic_markers: bool = False
 
 
 def generate_zigzag_signals(
@@ -55,67 +61,58 @@ def generate_zigzag_signals(
     b_kind = np.full(len(out), "", dtype=object)
     s_kind = np.full(len(out), "", dtype=object)
 
-    buy_events, buy_pending = _symmetric_zigzag_state(close, config.buy_reversal)
-    sell_events, sell_pending = _symmetric_zigzag_state(close, config.sell_reversal)
-    for extreme, side, confirmation in buy_events:
-        marker = extreme + config.marker_offset
-        if side == "B" and marker < len(out) and _confirmation_is_allowed(extreme, confirmation, config):
-            _set_candidate(raw_b, b_extreme, b_confirmation, b_kind, marker, extreme, confirmation, "confirmed")
-
-    for extreme, side, confirmation in sell_events:
-        marker = extreme + config.marker_offset
-        if side == "S" and marker < len(out) and _confirmation_is_allowed(extreme, confirmation, config):
-            _set_candidate(raw_s, s_extreme, s_confirmation, s_kind, marker, extreme, confirmation, "confirmed")
-
-    if config.include_pending and len(out):
-        _add_pending_candidate(
-            close,
-            buy_pending,
-            "B",
-            config.pending_buy_min_reversal,
-            config,
-            raw_b,
-            b_extreme,
-            b_confirmation,
-            b_kind,
-        )
-        _add_pending_candidate(
-            close,
-            sell_pending,
-            "S",
-            config.pending_sell_min_reversal,
-            config,
-            raw_s,
-            s_extreme,
-            s_confirmation,
-            s_kind,
-        )
-
-    _add_fallback_buy_candidates(
-        out,
-        close,
-        config,
-        raw_b,
-        b_extreme,
-        b_confirmation,
-        b_kind,
-    )
-    if config.include_turning_sells:
-        _add_turning_sell_candidates(
+    if config.monotonic_markers:
+        for candidate in generate_monotonic_candidates(
+            out,
+            buy_threshold=config.buy_reversal,
+            sell_threshold=config.sell_reversal,
+            minimum_history=config.minimum_history_bars,
+        ):
+            active = raw_b if candidate.side == "B" else raw_s
+            extremes = b_extreme if candidate.side == "B" else s_extreme
+            confirmations = b_confirmation if candidate.side == "B" else s_confirmation
+            kinds = b_kind if candidate.side == "B" else s_kind
+            confirmation = (
+                candidate.confirmation
+                if candidate.confirmation is not None
+                else len(out) - 1
+            )
+            _set_candidate(
+                active,
+                extremes,
+                confirmations,
+                kinds,
+                candidate.marker,
+                candidate.extreme,
+                confirmation,
+                (
+                    candidate.kind
+                    if candidate.kind != "standard"
+                    else ("confirmed" if candidate.confirmed else "pending")
+                ),
+            )
+    else:
+        _populate_repainting_candidates(
             out,
             close,
             config,
+            raw_b,
             raw_s,
+            b_extreme,
             s_extreme,
+            b_confirmation,
             s_confirmation,
+            b_kind,
             s_kind,
         )
 
-    _apply_stability_filters(out, config, raw_b, raw_s, b_confirmation, b_kind)
-
-    is_s = _filter_s_until_b(raw_b, raw_s) if config.lock_s_until_b else raw_s.copy()
+    is_s = (
+        raw_s.copy()
+        if config.monotonic_markers
+        else _filter_s_until_b(raw_b, raw_s) if config.lock_s_until_b else raw_s.copy()
+    )
     is_b = raw_b.copy()
-    if config.filter_candidates:
+    if config.filter_candidates and not config.monotonic_markers:
         is_b &= _candidate_keep_mask(out, is_b, "B", b_extreme, b_confirmation, b_kind)
         is_s &= _candidate_keep_mask(out, is_s, "S", s_extreme, s_confirmation, s_kind)
     out["zigzag_raw_b"] = raw_b
@@ -124,13 +121,19 @@ def generate_zigzag_signals(
     out["zigzag_s_kind"] = s_kind
     out["is_b"] = is_b
     out["is_s"] = is_s
+    auxiliary_buy_trigger = is_b
+    auxiliary_sell_trigger = is_s
+    if config.monotonic_markers:
+        auxiliary_buy_trigger, auxiliary_sell_trigger = _legacy_filtered_candidates(
+            out, close, config
+        )
     continuity_reset = np.zeros(len(out), dtype=bool)
     if config.auxiliary_mode == "formula":
         auxiliary = generate_formula_auxiliary_signals(
             out,
             reset_mask=continuity_reset,
-            buy_trigger_mask=is_b,
-            sell_trigger_mask=is_s,
+            buy_trigger_mask=auxiliary_buy_trigger,
+            sell_trigger_mask=auxiliary_sell_trigger,
             config=FormulaAuxiliaryConfig(profile=config.formula_auxiliary_profile),
         )
     else:
@@ -165,18 +168,145 @@ def generate_zigzag_signals(
     out["zigzag_ib_reason"] = np.where(
         out["is_ib"], f"{auxiliary_reason}_institutional_breakout", ""
     )
-    out["zigzag_e_reason"] = np.where(out["is_e"], f"{auxiliary_reason}_volume_event", "")
+    out["zigzag_e_reason"] = np.where(
+        out["is_e"], f"{auxiliary_reason}_volume_event", ""
+    )
     out["signal"] = ""
     out.loc[out["is_b"], "signal"] = append_signal(out.loc[out["is_b"], "signal"], "B")
     out.loc[out["is_s"], "signal"] = append_signal(out.loc[out["is_s"], "signal"], "S")
-    out.loc[out["is_ib"], "signal"] = append_signal(out.loc[out["is_ib"], "signal"], "IB")
+    out.loc[out["is_ib"], "signal"] = append_signal(
+        out.loc[out["is_ib"], "signal"], "IB"
+    )
     out.loc[out["is_e"], "signal"] = append_signal(out.loc[out["is_e"], "signal"], "E")
     out["rule_reason"] = build_signal_reason(out, prefix="zigzag")
     out["signal_reason"] = out["rule_reason"]
     return out
 
 
-def _symmetric_zigzag_events(close: np.ndarray, threshold: float) -> list[tuple[int, str, int]]:
+def _populate_repainting_candidates(
+    frame: pd.DataFrame,
+    close: np.ndarray,
+    config: ZigZagSignalConfig,
+    raw_b: np.ndarray,
+    raw_s: np.ndarray,
+    b_extreme: np.ndarray,
+    s_extreme: np.ndarray,
+    b_confirmation: np.ndarray,
+    s_confirmation: np.ndarray,
+    b_kind: np.ndarray,
+    s_kind: np.ndarray,
+) -> None:
+    buy_events, buy_pending = _symmetric_zigzag_state(close, config.buy_reversal)
+    sell_events, sell_pending = _symmetric_zigzag_state(close, config.sell_reversal)
+    for extreme, side, confirmation in buy_events:
+        marker = extreme + config.marker_offset
+        if (
+            side == "B"
+            and marker < len(frame)
+            and _confirmation_is_allowed(extreme, confirmation, config)
+        ):
+            _set_candidate(
+                raw_b,
+                b_extreme,
+                b_confirmation,
+                b_kind,
+                marker,
+                extreme,
+                confirmation,
+                "confirmed",
+            )
+    for extreme, side, confirmation in sell_events:
+        marker = extreme + config.marker_offset
+        if (
+            side == "S"
+            and marker < len(frame)
+            and _confirmation_is_allowed(extreme, confirmation, config)
+        ):
+            _set_candidate(
+                raw_s,
+                s_extreme,
+                s_confirmation,
+                s_kind,
+                marker,
+                extreme,
+                confirmation,
+                "confirmed",
+            )
+    if config.include_pending and len(frame):
+        _add_pending_candidate(
+            close,
+            buy_pending,
+            "B",
+            config.pending_buy_min_reversal,
+            config,
+            raw_b,
+            b_extreme,
+            b_confirmation,
+            b_kind,
+        )
+        _add_pending_candidate(
+            close,
+            sell_pending,
+            "S",
+            config.pending_sell_min_reversal,
+            config,
+            raw_s,
+            s_extreme,
+            s_confirmation,
+            s_kind,
+        )
+    _add_fallback_buy_candidates(
+        frame, close, config, raw_b, b_extreme, b_confirmation, b_kind
+    )
+    if config.include_turning_sells:
+        _add_turning_sell_candidates(
+            frame, close, config, raw_s, s_extreme, s_confirmation, s_kind
+        )
+    _apply_stability_filters(frame, config, raw_b, raw_s, b_confirmation, b_kind)
+
+
+def _legacy_filtered_candidates(
+    frame: pd.DataFrame,
+    close: np.ndarray,
+    config: ZigZagSignalConfig,
+) -> tuple[np.ndarray, np.ndarray]:
+    length = len(frame)
+    raw_b = np.zeros(length, dtype=bool)
+    raw_s = np.zeros(length, dtype=bool)
+    b_extreme = np.full(length, -1, dtype=int)
+    s_extreme = np.full(length, -1, dtype=int)
+    b_confirmation = np.full(length, -1, dtype=int)
+    s_confirmation = np.full(length, -1, dtype=int)
+    b_kind = np.full(length, "", dtype=object)
+    s_kind = np.full(length, "", dtype=object)
+    _populate_repainting_candidates(
+        frame,
+        close,
+        config,
+        raw_b,
+        raw_s,
+        b_extreme,
+        s_extreme,
+        b_confirmation,
+        s_confirmation,
+        b_kind,
+        s_kind,
+    )
+    is_b = raw_b.copy()
+    is_s = _filter_s_until_b(raw_b, raw_s) if config.lock_s_until_b else raw_s.copy()
+    if config.filter_candidates:
+        is_b &= _candidate_keep_mask(
+            frame, is_b, "B", b_extreme, b_confirmation, b_kind
+        )
+        is_s &= _candidate_keep_mask(
+            frame, is_s, "S", s_extreme, s_confirmation, s_kind
+        )
+    return is_b, is_s
+
+
+def _symmetric_zigzag_events(
+    close: np.ndarray, threshold: float
+) -> list[tuple[int, str, int]]:
     return _symmetric_zigzag_state(close, threshold)[0]
 
 
@@ -267,7 +397,16 @@ def _add_pending_candidate(
     if reversal < minimum_reversal:
         return
     if not active[marker]:
-        _set_candidate(active, extremes, confirmations, kinds, marker, extreme, len(close) - 1, "pending")
+        _set_candidate(
+            active,
+            extremes,
+            confirmations,
+            kinds,
+            marker,
+            extreme,
+            len(close) - 1,
+            "pending",
+        )
 
 
 def _add_fallback_buy_candidates(
@@ -281,15 +420,30 @@ def _add_fallback_buy_candidates(
 ) -> None:
     if len(close) < 2 or config.fallback_buy_max_end_gap < 0:
         return
-    open_values = pd.to_numeric(frame.get("open", frame["close"]), errors="coerce").to_numpy(dtype=float)
+    open_values = pd.to_numeric(
+        frame.get("open", frame["close"]), errors="coerce"
+    ).to_numpy(dtype=float)
     first = max(1, len(close) - 1 - config.fallback_buy_max_end_gap)
     for index in range(first, len(close)):
         lookback_start = max(0, index - config.fallback_buy_lookback)
-        previous_is_low = close[index - 1] <= np.min(close[lookback_start:index]) * 1.000001
-        return_is_enough = close[index] / close[index - 1] - 1.0 >= config.fallback_buy_min_return
+        previous_is_low = (
+            close[index - 1] <= np.min(close[lookback_start:index]) * 1.000001
+        )
+        return_is_enough = (
+            close[index] / close[index - 1] - 1.0 >= config.fallback_buy_min_return
+        )
         bullish_body = close[index] > open_values[index]
         if previous_is_low and return_is_enough and bullish_body and not active[index]:
-            _set_candidate(active, extremes, confirmations, kinds, index, index - 1, index, "fallback")
+            _set_candidate(
+                active,
+                extremes,
+                confirmations,
+                kinds,
+                index,
+                index - 1,
+                index,
+                "fallback",
+            )
 
 
 def _add_turning_sell_candidates(
@@ -303,35 +457,45 @@ def _add_turning_sell_candidates(
 ) -> None:
     if len(close) < 14 or config.turning_sell_max_end_gap < 0:
         return
-    open_values = pd.to_numeric(frame.get("open", frame["close"]), errors="coerce").to_numpy(dtype=float)
-    high = pd.to_numeric(frame.get("high", frame["close"]), errors="coerce").to_numpy(dtype=float)
-    low = pd.to_numeric(frame.get("low", frame["close"]), errors="coerce").to_numpy(dtype=float)
-    volume = pd.to_numeric(
-        frame.get("volume", pd.Series(0.0, index=frame.index)), errors="coerce"
-    ).fillna(0).to_numpy(dtype=float)
+    open_values = pd.to_numeric(
+        frame.get("open", frame["close"]), errors="coerce"
+    ).to_numpy(dtype=float)
+    high = pd.to_numeric(frame.get("high", frame["close"]), errors="coerce").to_numpy(
+        dtype=float
+    )
+    low = pd.to_numeric(frame.get("low", frame["close"]), errors="coerce").to_numpy(
+        dtype=float
+    )
+    volume = (
+        pd.to_numeric(
+            frame.get("volume", pd.Series(0.0, index=frame.index)), errors="coerce"
+        )
+        .fillna(0)
+        .to_numpy(dtype=float)
+    )
     first = max(13, len(close) - 1 - config.turning_sell_max_end_gap)
     for index in range(first, len(close)):
         previous_close = close[index - 1]
-        previous_is_high = previous_close >= np.max(close[index - 13:index]) * 0.999
+        previous_is_high = previous_close >= np.max(close[index - 13 : index]) * 0.999
         prior_run = previous_close / close[index - 9] - 1.0
         return_1 = close[index] / previous_close - 1.0
         candle_range = high[index] - low[index]
-        close_position = (close[index] - low[index]) / candle_range if candle_range > 0 else 1.0
-        history_volume = volume[max(0, index - 20):index]
+        close_position = (
+            (close[index] - low[index]) / candle_range if candle_range > 0 else 1.0
+        )
+        history_volume = volume[max(0, index - 20) : index]
         average_volume = float(np.mean(history_volume)) if len(history_volume) else 0.0
         volume_ratio = volume[index] / average_volume if average_volume > 0 else 0.0
         red_candle = close[index] < open_values[index]
         strong_turn = (
-            -0.05 <= return_1 <= -0.01
-            and close_position <= 0.2
-            and volume_ratio <= 1.2
+            -0.05 <= return_1 <= -0.01 and close_position <= 0.2 and volume_ratio <= 1.2
         )
         weak_turn = (
             -0.01 <= return_1 <= -0.001
             and 0.3 <= close_position <= 0.5
             and 1.0 <= volume_ratio <= 1.2
         )
-        prior_local_low = np.min(close[max(0, index - 8):index])
+        prior_local_low = np.min(close[max(0, index - 8) : index])
         prior_rebound = previous_close / prior_local_low - 1.0
         terminal_rebound_turn = (
             index == len(close) - 1
@@ -393,9 +557,19 @@ def _candidate_keep_mask(
     kinds: np.ndarray,
 ) -> np.ndarray:
     close = pd.to_numeric(frame["close"], errors="coerce").to_numpy(dtype=float)
-    high = pd.to_numeric(frame.get("high", frame["close"]), errors="coerce").to_numpy(dtype=float)
-    low = pd.to_numeric(frame.get("low", frame["close"]), errors="coerce").to_numpy(dtype=float)
-    volume = pd.to_numeric(frame.get("volume", pd.Series(0.0, index=frame.index)), errors="coerce").fillna(0).to_numpy(dtype=float)
+    high = pd.to_numeric(frame.get("high", frame["close"]), errors="coerce").to_numpy(
+        dtype=float
+    )
+    low = pd.to_numeric(frame.get("low", frame["close"]), errors="coerce").to_numpy(
+        dtype=float
+    )
+    volume = (
+        pd.to_numeric(
+            frame.get("volume", pd.Series(0.0, index=frame.index)), errors="coerce"
+        )
+        .fillna(0)
+        .to_numpy(dtype=float)
+    )
     keep = active.copy()
     for index in np.flatnonzero(active):
         extreme = int(extremes[index])
@@ -404,8 +578,12 @@ def _candidate_keep_mask(
             continue
         history_start = max(0, index - 20)
         history_volume = volume[history_start:index]
-        history_range = (high[history_start:index] - low[history_start:index]) / close[history_start:index]
-        average_volume = float(np.mean(history_volume)) if len(history_volume) else volume[index]
+        history_range = (high[history_start:index] - low[history_start:index]) / close[
+            history_start:index
+        ]
+        average_volume = (
+            float(np.mean(history_volume)) if len(history_volume) else volume[index]
+        )
         volume_ratio = volume[index] / average_volume if average_volume else 0.0
         atr_ratio = float(np.mean(history_range)) if len(history_range) else 0.0
         reversal = close[confirmation] / close[extreme] - 1.0
@@ -442,7 +620,9 @@ def _filter_s_until_b(raw_b: np.ndarray, raw_s: np.ndarray) -> np.ndarray:
     return filtered
 
 
-def _confirmation_dates(dates: pd.Series, confirmation: np.ndarray, active: np.ndarray) -> pd.Series:
+def _confirmation_dates(
+    dates: pd.Series, confirmation: np.ndarray, active: np.ndarray
+) -> pd.Series:
     values = pd.Series(pd.NaT, index=dates.index, dtype="datetime64[ns]")
     for index in np.flatnonzero(active):
         confirmation_index = int(confirmation[index])
@@ -456,7 +636,10 @@ def _confirmation_is_allowed(
     confirmation: int,
     config: ZigZagSignalConfig,
 ) -> bool:
-    return config.max_confirmation_bars is None or confirmation - extreme <= config.max_confirmation_bars
+    return (
+        config.max_confirmation_bars is None
+        or confirmation - extreme <= config.max_confirmation_bars
+    )
 
 
 def _validate_config(config: ZigZagSignalConfig) -> None:

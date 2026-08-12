@@ -31,6 +31,7 @@ def calculate(payload: dict[str, object]) -> dict[str, object]:
         frame,
         ZigZagSignalConfig(
             max_confirmation_bars=None,
+            monotonic_markers=True,
             auxiliary_mode="formula",
             formula_auxiliary_profile="exact",
         ),
