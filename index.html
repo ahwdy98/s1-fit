@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>S1 Formula Demo</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net">
+  <style>
+    :root { color-scheme: light; font-family: Inter, "Segoe UI", sans-serif; color: #18212b; background: #f4f6f8; }
+    * { box-sizing: border-box; letter-spacing: 0; }
+    body { margin: 0; min-width: 320px; }
+    header { min-height: 58px; display: flex; align-items: center; gap: 18px; padding: 10px 22px; background: #fff; border-bottom: 1px solid #dce2e8; }
+    h1 { margin: 0; font-size: 18px; font-weight: 650; }
+    .sub { color: #66717d; font-size: 13px; }
+    main { padding: 16px 20px 24px; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-bottom: 12px; }
+    label { display: grid; gap: 5px; font-size: 12px; color: #5b6672; }
+    input, button { height: 36px; border: 1px solid #cbd3dc; background: #fff; border-radius: 5px; padding: 0 10px; font: inherit; }
+    #symbol { width: 150px; text-transform: uppercase; }
+    button { cursor: pointer; color: #fff; background: #1565c0; border-color: #1565c0; font-weight: 600; }
+    button:disabled { cursor: wait; opacity: .55; }
+    .layers { display: flex; gap: 12px; align-items: center; min-height: 36px; }
+    .layers label { display: flex; gap: 5px; align-items: center; color: #37424e; }
+    .layers input { width: auto; height: auto; }
+    #status { margin-left: auto; color: #66717d; font-size: 13px; }
+    #chart { height: min(75vh, 760px); min-height: 460px; background: #fff; border: 1px solid #dce2e8; border-radius: 6px; overflow: hidden; }
+    .error { color: #b3261e !important; }
+    footer { padding: 10px 20px 20px; color: #75808b; font-size: 12px; }
+    @media (max-width: 700px) {
+      header { align-items: flex-start; flex-direction: column; gap: 2px; }
+      main { padding: 12px; }
+      #status { width: 100%; margin-left: 0; }
+      #chart { min-height: 520px; }
+    }
+  </style>
+</head>
+<body>
+  <header><h1>S1 Formula Demo</h1><span class="sub">浏览器内运行 Python · 最近一年日线</span></header>
+  <main>
+    <div class="toolbar">
+      <label>股票代码<input id="symbol" list="symbols" value="AAPL" autocomplete="off"><datalist id="symbols"></datalist></label>
+      <label>截止日期<input id="end-date" type="date"></label>
+      <button id="run" disabled>计算</button>
+      <div class="layers">
+        <label><input id="show-signals" type="checkbox" checked>B/S/IB/E</label>
+        <label><input id="show-numbers" type="checkbox" checked>连续数字</label>
+      </div>
+      <span id="status">正在初始化 Python...</span>
+    </div>
+    <div id="chart"></div>
+  </main>
+  <footer>数据仅用于公式演示，不构成投资建议。静态站点不会上传股票选择或行情数据。</footer>
+  <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.27.7/full/pyodide.js"></script>
+  <script type="module" src="./web/app.js"></script>
+</body>
+</html>

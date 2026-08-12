@@ -1,0 +1,6 @@
+*.gz binary
+*.json text eol=lf
+*.js text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+
