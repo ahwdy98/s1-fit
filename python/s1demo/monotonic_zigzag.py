@@ -35,17 +35,6 @@ def generate_monotonic_candidates(
     buys = [item for item in buys if not _reject_buy(features, item.marker)]
     sells = [item for item in sells if not _reject_sell(features, item.marker)]
 
-    filtered_sells: list[MonotonicCandidate] = []
-    buy_markers = {item.marker for item in buys}
-    sell_by_marker = {item.marker: item for item in sells}
-    locked = False
-    for index in range(len(close)):
-        if index in buy_markers:
-            locked = False
-        if index in sell_by_marker and not locked:
-            filtered_sells.append(sell_by_marker[index])
-            locked = True
-
     open_values = pd.to_numeric(frame["open"], errors="coerce").to_numpy(float)
     high = pd.to_numeric(frame["high"], errors="coerce").to_numpy(float)
     low = pd.to_numeric(frame["low"], errors="coerce").to_numpy(float)
@@ -107,11 +96,37 @@ def generate_monotonic_candidates(
         regular = previous_is_high and prior_run >= 0.01 and red and (strong or weak)
         if regular or terminal:
             kind = "turning" if regular else "terminal_turning"
-            filtered_sells.append(
+            sells.append(
                 MonotonicCandidate(index, index - 1, "S", True, kind, index)
             )
 
-    return buys + filtered_sells
+    return _lock_repeated_sells(buys, sells)
+
+
+def _lock_repeated_sells(
+    buys: list[MonotonicCandidate], sells: list[MonotonicCandidate]
+) -> list[MonotonicCandidate]:
+    """Allow another S only after an intervening B candidate."""
+    candidates_by_marker: dict[int, dict[str, MonotonicCandidate]] = {}
+    for candidate in buys + sells:
+        slot = candidates_by_marker.setdefault(candidate.marker, {})
+        current = slot.get(candidate.side)
+        if current is None or (candidate.confirmed and not current.confirmed):
+            slot[candidate.side] = candidate
+
+    accepted: list[MonotonicCandidate] = []
+    sell_locked = False
+    for marker in sorted(candidates_by_marker):
+        slot = candidates_by_marker[marker]
+        buy = slot.get("B")
+        sell = slot.get("S")
+        if buy is not None:
+            accepted.append(buy)
+            sell_locked = False
+        if sell is not None and not sell_locked:
+            accepted.append(sell)
+            sell_locked = True
+    return accepted
 
 
 def _track_side(close: np.ndarray, threshold: float, expected_side: str):
@@ -193,14 +208,30 @@ def _track_side(close: np.ndarray, threshold: float, expected_side: str):
 
 def _reject_buy(features: pd.DataFrame, index: int) -> bool:
     row = features.iloc[index]
+    calm_bullish_rebound = (
+        row["atr_pct"] <= 0.025
+        and 0.015 <= row["ret_1"] <= 0.03
+        and row["body_pct"] > 0
+        and row["close_pos"] >= 0.60
+    )
+    strong_capitulation_rebound = (
+        row["ret_1"] >= 0.04
+        and row["body_pct"] > 0
+        and row["close_pos"] >= 0.40
+    )
     return bool(
         (row["ret_1"] > 0.15 and row["body_pct"] < 0)
         or (
             row["atr_pct"] <= 0.04
             and row["ret_20"] > -0.02
             and row["volume_ratio_50"] <= 2.59
+            and not calm_bullish_rebound
         )
-        or (2.59 < row["volume_ratio_50"] < 3.0 and row["ret_5"] <= -0.13)
+        or (
+            2.59 < row["volume_ratio_50"] < 3.0
+            and row["ret_5"] <= -0.13
+            and not strong_capitulation_rebound
+        )
         or (
             row["dollar_volume_ratio_20"] > 3.25
             and row["close_pos"] > 0.72
@@ -211,16 +242,23 @@ def _reject_buy(features: pd.DataFrame, index: int) -> bool:
 
 def _reject_sell(features: pd.DataFrame, index: int) -> bool:
     row = features.iloc[index]
+    strong_momentum_peak = row["ret_20"] > 0.50
     return bool(
         (
             -0.02 < row["ret_1"] < 0
             and row["range_pct"] <= 0.03
             and row["upper_wick_pct"] > 0.41
+            and row["close_pos"] > 0.20
         )
         or (
             row["ret_1"] > -0.005
             and row["body_pct"] > 0.015
             and row["close_pos"] > 0.60
+            and not strong_momentum_peak
         )
-        or (row["ret_1"] > -0.02 and row["body_pct"] > 0.04)
+        or (
+            row["ret_1"] > -0.02
+            and row["body_pct"] > 0.04
+            and not strong_momentum_peak
+        )
     )
