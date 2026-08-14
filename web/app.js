@@ -1,9 +1,11 @@
 const statusNode = document.querySelector('#status');
 const runButton = document.querySelector('#run');
 const symbolInput = document.querySelector('#symbol');
+const startDateInput = document.querySelector('#start-date');
 const endDateInput = document.querySelector('#end-date');
 const datalist = document.querySelector('#symbols');
 const showSignals = document.querySelector('#show-signals');
+const showRemoved = document.querySelector('#show-removed');
 const showNumbers = document.querySelector('#show-numbers');
 const chartNode = document.querySelector('#chart');
 
@@ -12,6 +14,8 @@ let manifest;
 let chart;
 let resizeObserver;
 let currentResult;
+let currentFullResult;
+let currentCalculationKey;
 
 function setStatus(message, error = false) {
   statusNode.textContent = message;
@@ -57,11 +61,14 @@ function trimPayload(payload, endDate) {
 }
 
 function visibleResult(result) {
-  const visible = items => items.filter(item => item.time >= manifest.cutoff);
+  const startDate = startDateInput.value || manifest.cutoff;
+  const visible = items => items.filter(item => item.time >= startDate);
   return {
     bars: visible(result.bars),
     markers: visible(result.markers),
+    removedMarkers: visible(result.removedMarkers || []),
     numbers: visible(result.numbers),
+    formulaProfile: result.formulaProfile,
   };
 }
 
@@ -85,31 +92,43 @@ function render() {
   candles.setData(currentResult.bars);
   const markers = [];
   if (showSignals.checked) markers.push(...currentResult.markers);
+  if (showRemoved.checked) markers.push(...currentResult.removedMarkers);
   if (showNumbers.checked) markers.push(...currentResult.numbers);
-  markers.sort((a, b) => a.time.localeCompare(b.time));
+  markers.sort((a, b) => a.time.localeCompare(b.time) || a.text.localeCompare(b.text));
   candles.setMarkers(markers);
   chart.timeScale().fitContent();
-  resizeObserver = new ResizeObserver(([entry]) => chart.applyOptions({
-    width: entry.contentRect.width,
-    height: entry.contentRect.height,
-  }));
+  resizeObserver = new ResizeObserver(([entry]) => {
+    chart.applyOptions({
+      width: entry.contentRect.width,
+      height: entry.contentRect.height,
+    });
+    chart.timeScale().fitContent();
+  });
   resizeObserver.observe(chartNode);
 }
 
 async function calculate() {
   const symbol = symbolInput.value.trim().toUpperCase();
   if (!manifest.symbols.includes(symbol)) return setStatus(`没有找到 ${symbol}`, true);
+  if (startDateInput.value > endDateInput.value) return setStatus('开始日期不能晚于截止日期', true);
   runButton.disabled = true;
-  setStatus(`正在加载 ${symbol}...`);
+  const calculationKey = `${symbol}:${endDateInput.value}`;
+  setStatus(`正在计算 ${symbol}...`);
   try {
-    const payload = trimPayload(await loadSymbol(symbol), endDateInput.value);
-    if (!payload.d.length) throw new Error('截止日期早于可用行情');
-    pyodide.globals.set('payload_json', JSON.stringify(payload));
-    const output = await pyodide.runPythonAsync('from s1demo import calculate_json\ncalculate_json(payload_json)');
-    currentResult = visibleResult(JSON.parse(output));
+    if (currentCalculationKey !== calculationKey || !currentFullResult) {
+      const payload = trimPayload(await loadSymbol(symbol), endDateInput.value);
+      if (!payload.d.length) throw new Error('截止日期早于可用行情');
+      pyodide.globals.set('payload_json', JSON.stringify(payload));
+      const output = await pyodide.runPythonAsync('from s1demo import calculate_json\ncalculate_json(payload_json)');
+      currentFullResult = JSON.parse(output);
+      currentCalculationKey = calculationKey;
+    }
+    currentResult = visibleResult(currentFullResult);
+    if (!currentResult.bars.length) throw new Error('所选日期范围内没有行情');
     render();
+    const actualStart = currentResult.bars[0].time;
     const actualEnd = currentResult.bars.at(-1).time;
-    setStatus(`${symbol} · ${currentResult.bars.length} 根 · ${manifest.cutoff} 至 ${actualEnd}`);
+    setStatus(`${symbol} · ${currentResult.bars.length} 根 · ${actualStart} 至 ${actualEnd}`);
   } catch (error) {
     setStatus(error.message || String(error), true);
   } finally {
@@ -121,13 +140,16 @@ async function initialize() {
   const response = await fetch('./data/manifest.json');
   if (!response.ok) throw new Error(`清单加载失败: HTTP ${response.status}`);
   manifest = await response.json();
+  startDateInput.min = manifest.cutoff;
+  startDateInput.max = manifest.latest;
+  startDateInput.value = manifest.cutoff;
   endDateInput.min = manifest.cutoff;
   endDateInput.max = manifest.latest;
   endDateInput.value = manifest.latest;
   datalist.replaceChildren(...manifest.symbols.map(symbol => Object.assign(document.createElement('option'), { value: symbol })));
   pyodide = await loadPyodide();
   await pyodide.loadPackage(['numpy', 'pandas']);
-  const files = ['__init__.py', 'runtime.py', 'signals.py', 'indicators.py', 'auxiliary_tree_model.py', 'causal_auxiliary_features.py', 'causal_auxiliary_tree_model.py', 'auxiliary_signals.py', 'monotonic_zigzag.py', 'zigzag_signals.py'];
+  const files = ['__init__.py', 'runtime.py', 'signals.py', 'indicators.py', 'auxiliary_tree_model.py', 'causal_auxiliary_features.py', 'causal_auxiliary_tree_model.py', 'auxiliary_signals.py', 'futu_metrics.py', 'restricted_s1_formula.py', 'monotonic_zigzag.py', 'zigzag_signals.py'];
   pyodide.FS.mkdirTree('/home/pyodide/s1demo');
   await Promise.all(files.map(async name => {
     const source = await fetch(`./python/s1demo/${name}`).then(fileResponse => {
@@ -145,6 +167,8 @@ async function initialize() {
 runButton.addEventListener('click', calculate);
 symbolInput.addEventListener('keydown', event => { if (event.key === 'Enter') calculate(); });
 endDateInput.addEventListener('change', calculate);
+startDateInput.addEventListener('change', calculate);
 showSignals.addEventListener('change', render);
+showRemoved.addEventListener('change', render);
 showNumbers.addEventListener('change', render);
 initialize().catch(error => setStatus(error.message || String(error), true));

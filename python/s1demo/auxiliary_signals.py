@@ -262,10 +262,21 @@ def generate_formula_auxiliary_signals(
         "causal",
         "causal-formula",
         "causal-fit",
+        "restricted-formula",
     }:
         raise ValueError(
             "Formula profile must be exact, generalized, causal, causal-formula, "
-            "or causal-fit."
+            "causal-fit, or restricted-formula."
+        )
+    if config.profile == "restricted-formula":
+        from .restricted_s1_formula import generate_restricted_formula_auxiliary_signals
+
+        return generate_restricted_formula_auxiliary_signals(
+            frame,
+            reset_mask=reset_mask,
+            buy_trigger_mask=buy_trigger_mask,
+            sell_trigger_mask=sell_trigger_mask,
+            continuity_cap=continuity_cap,
         )
     if config.profile == "causal-fit":
         out = generate_formula_auxiliary_signals(
@@ -325,9 +336,7 @@ def generate_formula_auxiliary_signals(
             next_return.ge(config.ib_two_day_previous_return_min)
             & next_amount_ratio.gt(1.0)
             & features["body_pct"].shift(-1).ge(config.ib_two_day_body_min)
-            & features["close_pos"]
-            .shift(-1)
-            .ge(config.ib_two_day_close_position_min)
+            & features["close_pos"].shift(-1).ge(config.ib_two_day_close_position_min)
         )
     structural_ib = (
         features["ret_1"].ge(config.ib_return)
@@ -341,9 +350,7 @@ def generate_formula_auxiliary_signals(
     structural_ib &= ~structural_rejection & (causal | ~continues_strong_next_day)
     amount_ratio = features["dollar_volume_ratio_20"]
     next_amount_rank_ratio = (
-        pd.Series(np.nan, index=features.index)
-        if causal
-        else amount_ratio.shift(-1)
+        pd.Series(np.nan, index=features.index) if causal else amount_ratio.shift(-1)
     )
     peak_confirmed = causal | (amount_ratio.ge(next_amount_rank_ratio) & has_next_day)
     institutional_peak = (
@@ -492,37 +499,29 @@ def generate_formula_auxiliary_signals(
             & three_day_amount_growth.ge(0.50)
         )
         bottom_quality = (
-            (
-                features["turnover_rate_delta"].ge(2.00)
-                & features["close_pos"].ge(0.60)
-            )
+            (features["turnover_rate_delta"].ge(2.00) & features["close_pos"].ge(0.60))
             | (features["rsi_14"].ge(50.0) & features["ret_3"].ge(0.0))
-            | (
-                features["close_pos"].ge(0.90)
-                & features["volume_ratio_20"].le(0.50)
-            )
+            | (features["close_pos"].ge(0.90) & features["volume_ratio_20"].le(0.50))
         )
         bottom_accumulation &= bottom_quality
-        flow_impulse_accumulation &= (
-            features["body_abs_pct"].le(0.04)
-            | features["dollar_volume_ratio_20"].ge(1.50)
-        )
+        flow_impulse_accumulation &= features["body_abs_pct"].le(0.04) | features[
+            "dollar_volume_ratio_20"
+        ].ge(1.50)
         absorption_accumulation &= (
             features["breakout_10"].ge(0.05)
             | (
                 features["ema_34_89_spread"].le(-0.10)
-                & (
-                    features["dollar_volume"] / features["dollar_volume"].shift(1)
-                ).ge(1.50)
+                & (features["dollar_volume"] / features["dollar_volume"].shift(1)).ge(
+                    1.50
+                )
             )
             | (
                 features["dollar_volume_rank_60"].ge(0.95)
                 & features["range_ratio_20"].ge(1.50)
             )
         )
-        strong_momentum &= (
-            features["volume_ratio_20"].le(2.50)
-            & features["rsi_14"].le(80.0)
+        strong_momentum &= features["volume_ratio_20"].le(2.50) & features["rsi_14"].le(
+            80.0
         )
         unconfirmed_quiet_surge = (
             quiet_accumulation
@@ -636,9 +635,7 @@ def generate_formula_auxiliary_signals(
         & low_volume_regime
         & features["turnover_rate_delta"].le(config.event_turnover_delta_split)
         & features["atr_pct_z"].gt(config.event_volatility_atr_z)
-        & features["volume_ratio_20"].le(
-            config.event_volatility_volume_ratio_20_max
-        )
+        & features["volume_ratio_20"].le(config.event_volatility_volume_ratio_20_max)
         & features["range_ratio_5_20"].le(config.event_volatility_range_ratio_max)
         & features["range_ratio_20"].ge(config.event_volatility_range_ratio_20_min)
         & (causal | next_return.le(config.event_volatility_next_return_max))
@@ -687,10 +684,7 @@ def generate_formula_auxiliary_signals(
         (features["dollar_volume"] / features["dollar_volume"].shift(1)).ge(
             config.event_confirmed_amount_increase_min
         )
-        & (
-            causal
-            | next_amount_ratio.le(config.event_confirmed_next_amount_ratio_max)
-        )
+        & (causal | next_amount_ratio.le(config.event_confirmed_next_amount_ratio_max))
         & features["body_abs_pct"].ge(config.event_confirmed_body_min)
         & features["close_pos"].le(config.event_confirmed_close_position_max)
     )
@@ -708,10 +702,7 @@ def generate_formula_auxiliary_signals(
             & features["dollar_volume_ratio_20"].ge(
                 config.event_confirmed_relaxed_amount_ratio_min
             )
-            & (
-                causal
-                | next_return.le(config.event_confirmed_relaxed_next_return_max)
-            )
+            & (causal | next_return.le(config.event_confirmed_relaxed_next_return_max))
         )
     )
     confirmed_gap_event = (
@@ -722,9 +713,7 @@ def generate_formula_auxiliary_signals(
             config.event_confirmed_gap_amount_ratio_min
         )
         & (
-            features["close_pos"].le(
-                config.event_confirmed_gap_close_position_low_max
-            )
+            features["close_pos"].le(config.event_confirmed_gap_close_position_low_max)
             | features["close_pos"].ge(
                 config.event_confirmed_gap_close_position_high_min
             )
@@ -733,9 +722,7 @@ def generate_formula_auxiliary_signals(
     confirmed_absorption_event = (
         allow_single_symbol_rules
         & features["breakout_20"].le(config.event_confirmed_absorption_breakout_max)
-        & features["close_pos"].ge(
-            config.event_confirmed_absorption_close_position_min
-        )
+        & features["close_pos"].ge(config.event_confirmed_absorption_close_position_min)
         & features["volume_ratio_20"].ge(
             config.event_confirmed_absorption_volume_ratio_min
         )
@@ -747,9 +734,7 @@ def generate_formula_auxiliary_signals(
         )
         & (
             causal
-            | next_amount_ratio.le(
-                config.event_confirmed_absorption_next_amount_max
-            )
+            | next_amount_ratio.le(config.event_confirmed_absorption_next_amount_max)
         )
     )
     confirmed_explosion = (
@@ -774,17 +759,12 @@ def generate_formula_auxiliary_signals(
     )
     semantic_volatility_event = (
         features["atr_pct_z"].gt(config.event_volatility_atr_z)
-        & features["volume_ratio_20"].le(
-            config.event_volatility_volume_ratio_20_max
-        )
+        & features["volume_ratio_20"].le(config.event_volatility_volume_ratio_20_max)
         & features["range_ratio_20"].ge(config.event_volatility_range_ratio_20_min)
         & features["range_ratio_5_20"].le(config.event_volatility_range_ratio_max)
         & features["ret_1"].between(-0.08, 0.05)
         & features["body_abs_pct"].le(0.06)
-        & (
-            features["body_abs_pct"].ge(0.04)
-            | features["close_pos"].le(0.20)
-        )
+        & (features["body_abs_pct"].ge(0.04) | features["close_pos"].le(0.20))
     )
     semantic_td_climax = (
         features["td_up_count"].ge(config.event_td_climax_count)
@@ -799,10 +779,9 @@ def generate_formula_auxiliary_signals(
         & features["close_pos"].le(0.40)
     )
     if config.profile == "causal-formula":
-        confirmed_explosion &= (
-            features["volume_ratio_20"].ge(2.10)
-            & features["dollar_volume_ratio_20"].ge(2.00)
-        )
+        confirmed_explosion &= features["volume_ratio_20"].ge(2.10) & features[
+            "dollar_volume_ratio_20"
+        ].ge(2.00)
         amount_rebound_event &= features["turnover_rate_z"].notna()
     else:
         effort_without_result &= False
@@ -810,13 +789,9 @@ def generate_formula_auxiliary_signals(
         semantic_volatility_event &= False
         semantic_td_climax &= False
         gap_dislocation_event &= False
-    primary_price_confirmed = (
-        features[["ret_1", "body_abs_pct"]]
-        .abs()
-        .max(axis=1)
-        .ge(config.event_primary_price_move_min)
-        | ((not causal) & (next_return.lt(0.0) | next_return.isna()))
-    )
+    primary_price_confirmed = features[["ret_1", "body_abs_pct"]].abs().max(axis=1).ge(
+        config.event_primary_price_move_min
+    ) | ((not causal) & (next_return.lt(0.0) | next_return.isna()))
     primary_event = (
         (abnormal_turnover_event | amount_shock)
         & primary_explosion
@@ -847,9 +822,9 @@ def generate_formula_auxiliary_signals(
             & features["gap_pct"].shift(1).ge(config.event_gap_delay_min)
             & features["body_abs_pct"].shift(1).le(config.event_gap_delay_body_max)
             & features["ret_1"].ge(config.event_gap_delay_next_return_min)
-            & (
-                features["dollar_volume"] / features["dollar_volume"].shift(1)
-            ).ge(config.event_gap_delay_next_amount_min)
+            & (features["dollar_volume"] / features["dollar_volume"].shift(1)).ge(
+                config.event_gap_delay_next_amount_min
+            )
         )
         is_event |= delayed_gap_event
     else:
@@ -1010,9 +985,7 @@ def constructive_ib_sequence(
     return (
         current_volume_change.gt(0.0)
         & prior_two_day_volume_growth.gt(config.ib_sequence_prior_volume_growth_min)
-        & prior_day_volume_change.ge(
-            config.ib_sequence_prior_day_volume_change_min
-        )
+        & prior_day_volume_change.ge(config.ib_sequence_prior_day_volume_change_min)
         & features["body_pct"].shift(1).ge(0.0)
         & features["body_pct"].shift(2).gt(0.0)
         & features["turnover_rate_delta"]
@@ -1048,15 +1021,15 @@ def repainting_td_continuity(
     buy_trigger_mask: np.ndarray | None = None,
     sell_trigger_mask: np.ndarray | None = None,
     event_trigger_mask: np.ndarray | None = None,
-    short_return_min: float = 0.05,
-    confirmed_median_volume_ratio_min: float = 0.10,
+    short_return_min: float | None = 0.05,
+    confirmed_median_volume_ratio_min: float | None = 0.10,
     completed_minimum: int = 6,
     completed_max_age: int = 2,
-    completed_return_max: float = 0.25,
-    completed_volume_ratio_max: float = 2.00,
+    completed_return_max: float | None = 0.25,
+    completed_volume_ratio_max: float | None = 2.00,
     terminal_minimum: int = 5,
     terminal_maximum: int = 8,
-    terminal_return_max: float = 0.22,
+    terminal_return_max: float | None = 0.22,
     terminal_volume_ratio_max: float = 2.00,
     terminal_atr_z_max: float = 2.00,
     terminal_unstable_atr_z_min: float = 1.90,
@@ -1084,7 +1057,10 @@ def repainting_td_continuity(
     for start, end, maximum, _ in runs:
         if maximum < confirmation:
             continue
-        if "volume_ratio_20" in features:
+        if (
+            confirmed_median_volume_ratio_min is not None
+            and "volume_ratio_20" in features
+        ):
             median_volume_ratio = float(
                 features["volume_ratio_20"].iloc[start : end + 1].median()
             )
@@ -1115,14 +1091,20 @@ def repainting_td_continuity(
                 and len(features) - 1 - end <= completed_max_age
                 and maximum >= completed_minimum
                 and marker_count >= 1
-                and short_return_min <= run_return <= completed_return_max
-                and features["volume_ratio_20"].iloc[end] <= completed_volume_ratio_max
+                and (short_return_min is None or run_return >= short_return_min)
+                and (completed_return_max is None or run_return <= completed_return_max)
+                and (
+                    completed_volume_ratio_max is None
+                    or features["volume_ratio_20"].iloc[end]
+                    <= completed_volume_ratio_max
+                )
             )
             terminal = (
                 end == len(features) - 1
                 and terminal_minimum <= maximum <= terminal_maximum
                 and marker_count <= 1
-                and short_return_min <= run_return <= terminal_return_max
+                and (short_return_min is None or run_return >= short_return_min)
+                and (terminal_return_max is None or run_return <= terminal_return_max)
                 and features["volume_ratio_20"].iloc[end] <= terminal_volume_ratio_max
                 and features["atr_pct_z"].iloc[end] <= terminal_atr_z_max
             )
@@ -1138,10 +1120,7 @@ def repainting_td_continuity(
                 )
                 stop = (
                     end
-                    if (
-                        features["ret_1"].iloc[end] * side < 0
-                        and not endpoint_marker
-                    )
+                    if (features["ret_1"].iloc[end] * side < 0 and not endpoint_marker)
                     or unstable_endpoint
                     else end + 1
                 )
@@ -1356,10 +1335,9 @@ def _next_day_structural_rejection(
         & next_return.gt(0.0)
     )
     body_pct = features.get("body_pct", features["body_abs_pct"])
-    climactic_failure = (
-        body_pct.ge(config.ib_climactic_failure_body_min)
-        & next_return.le(config.ib_climactic_failure_next_return_max)
-    )
+    climactic_failure = body_pct.ge(
+        config.ib_climactic_failure_body_min
+    ) & next_return.le(config.ib_climactic_failure_next_return_max)
     future_rejection = (
         distribution
         | severe_reversal

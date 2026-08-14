@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from .futu_metrics import futu_turnover_rate, futu_volume_ratio
 from .indicators import add_indicators
 
 
@@ -16,6 +17,22 @@ class MonotonicCandidate:
     confirmed: bool = False
     kind: str = "standard"
     confirmation: int | None = None
+
+
+@dataclass(frozen=True)
+class RestrictedCandidateConfig:
+    """Small set of ZigZag confirmation rules using activity and S4."""
+
+    volume_ratio_lookback: int = 5
+    bearish_spike_return_min: float = 0.15
+    pending_volume_ratio_max: float = 2.50
+    weak_pending_max_age: int = 3
+    weak_pending_return_max: float = 0.03
+    weak_pending_volume_ratio_max: float = 1.10
+    weak_pending_turnover_rate_max: float = 1.50
+    weak_pending_s4_max: float = 6.50
+    pending_sell_reversal_min: float = 0.02
+    pending_sell_low_s4_max: float = 2.00
 
 
 def generate_monotonic_candidates(
@@ -101,6 +118,167 @@ def generate_monotonic_candidates(
             )
 
     return _lock_repeated_sells(buys, sells)
+
+
+def generate_restricted_monotonic_candidates(
+    frame: pd.DataFrame,
+    buy_threshold: float = 0.08,
+    sell_threshold: float = 0.10,
+    minimum_history: int = 3,
+    config: RestrictedCandidateConfig | None = None,
+) -> list[MonotonicCandidate]:
+    """Generate B/S from ZigZag plus volume, turnover and S4 confirmation."""
+    config = config or RestrictedCandidateConfig()
+    required = {"open", "high", "low", "close", "volume"}
+    missing = required.difference(frame.columns)
+    if "turnover_rate" not in frame and "turnoverRate" not in frame:
+        missing.add("turnoverRate")
+    if missing:
+        raise ValueError(f"Restricted ZigZag requires columns: {sorted(missing)}")
+
+    close = pd.to_numeric(frame["close"], errors="coerce").to_numpy(float)
+    open_values = pd.to_numeric(frame["open"], errors="coerce").to_numpy(float)
+    high = pd.to_numeric(frame["high"], errors="coerce").to_numpy(float)
+    low = pd.to_numeric(frame["low"], errors="coerce").to_numpy(float)
+    volume_ratio, turnover_rate, s4 = _restricted_futu_inputs(
+        frame, config.volume_ratio_lookback
+    )
+    buy_items, _ = _track_side(close, buy_threshold, "B")
+    sell_items, _ = _track_side(close, sell_threshold, "S")
+    buys = [
+        item
+        for item in buy_items
+        if item.marker >= minimum_history
+        and not _reject_restricted_buy(
+            item,
+            close,
+            open_values,
+            volume_ratio,
+            turnover_rate,
+            s4,
+            config,
+        )
+    ]
+    sells = [
+        item
+        for item in sell_items
+        if item.marker >= minimum_history
+        and not _reject_restricted_sell(
+            item, close, open_values, high, low, s4, config
+        )
+    ]
+
+    return _lock_repeated_sells(buys, sells)
+
+
+def generate_removed_restricted_candidates(
+    frame: pd.DataFrame,
+    buy_threshold: float = 0.08,
+    sell_threshold: float = 0.10,
+    minimum_history: int = 3,
+) -> list[MonotonicCandidate]:
+    """Replay historical cutoffs and return B/S markers later withdrawn."""
+    seen: dict[tuple[int, str], MonotonicCandidate] = {}
+    for stop in range(minimum_history + 1, len(frame) + 1):
+        prefix = frame.iloc[:stop]
+        for candidate in generate_restricted_monotonic_candidates(
+            prefix,
+            buy_threshold=buy_threshold,
+            sell_threshold=sell_threshold,
+            minimum_history=minimum_history,
+        ):
+            seen.setdefault((candidate.marker, candidate.side), candidate)
+
+    active = {
+        (candidate.marker, candidate.side)
+        for candidate in generate_restricted_monotonic_candidates(
+            frame,
+            buy_threshold=buy_threshold,
+            sell_threshold=sell_threshold,
+            minimum_history=minimum_history,
+        )
+    }
+    return [
+        candidate
+        for key, candidate in sorted(seen.items())
+        if key not in active
+    ]
+
+
+def _restricted_futu_inputs(
+    frame: pd.DataFrame, lookback: int
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    volume_ratio = futu_volume_ratio(frame, lookback)
+    turnover_rate = futu_turnover_rate(frame)
+    high = pd.to_numeric(frame["high"], errors="coerce")
+    low = pd.to_numeric(frame["low"], errors="coerce")
+    close = pd.to_numeric(frame["close"], errors="coerce").replace(0, np.nan)
+    s4 = (((high - low) / close) * 100.0).rolling(4, min_periods=4).mean()
+    return volume_ratio, turnover_rate, s4
+
+
+def _reject_restricted_buy(
+    item: MonotonicCandidate,
+    close: np.ndarray,
+    open_values: np.ndarray,
+    volume_ratio: pd.Series,
+    turnover_rate: pd.Series,
+    s4: pd.Series,
+    config: RestrictedCandidateConfig,
+) -> bool:
+    index = item.marker
+    return_1 = close[index] / close[index - 1] - 1.0
+    if (
+        return_1 > config.bearish_spike_return_min
+        and close[index] < open_values[index]
+    ):
+        return True
+    if item.confirmed:
+        return False
+    age = len(close) - 1 - index
+    if volume_ratio.iloc[index] > config.pending_volume_ratio_max:
+        return True
+    return bool(
+        age <= config.weak_pending_max_age
+        and return_1 < config.weak_pending_return_max
+        and volume_ratio.iloc[index] < config.weak_pending_volume_ratio_max
+        and turnover_rate.iloc[index] < config.weak_pending_turnover_rate_max
+        and s4.iloc[index] < config.weak_pending_s4_max
+    )
+
+
+def _reject_restricted_sell(
+    item: MonotonicCandidate,
+    close: np.ndarray,
+    open_values: np.ndarray,
+    high: np.ndarray,
+    low: np.ndarray,
+    s4: pd.Series,
+    config: RestrictedCandidateConfig,
+) -> bool:
+    if item.confirmed:
+        return False
+    index = item.marker
+    age = len(close) - 1 - index
+    partial_reversal = -(close[-1] / close[item.extreme] - 1.0)
+    prior_low = np.min(close[max(0, index - 8) : index])
+    prior_rebound = close[index - 1] / prior_low - 1.0
+    candle_range = high[index] - low[index]
+    close_position = (
+        (close[index] - low[index]) / candle_range if candle_range > 0 else 1.0
+    )
+    terminal_turn = (
+        age == 0
+        and prior_rebound >= 0.10
+        and close[index] < close[index - 1]
+        and (close_position <= 0.30 or close[index] < open_values[index])
+    )
+    return bool(
+        age == 0
+        and partial_reversal < config.pending_sell_reversal_min
+        and s4.iloc[index] > config.pending_sell_low_s4_max
+        and not terminal_turn
+    )
 
 
 def _lock_repeated_sells(

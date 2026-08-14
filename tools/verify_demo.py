@@ -54,6 +54,8 @@ def main() -> None:
         if len(set(lengths.values())) != 1:
             raise RuntimeError(f"{symbol} has inconsistent column lengths: {lengths}")
         result = json.loads(calculate_json(json.dumps(payload, separators=(",", ":"))))
+        if result.get("formulaProfile") != "restricted-formula":
+            raise RuntimeError(f"{symbol} did not use restricted-formula.")
         if not result["bars"] or result["bars"][-1]["time"] > manifest["latest"]:
             raise RuntimeError(f"{symbol} produced an invalid chart result.")
         actual_markers = {
@@ -64,6 +66,22 @@ def main() -> None:
             raise RuntimeError(f"{symbol} is missing expected markers: {sorted(missing)}")
         if symbol == "KO" and ("2026-07-23", "B") in actual_markers:
             raise RuntimeError("KO incorrectly contains a 2026-07-23 B marker.")
+        removed_markers = {
+            (marker["time"], marker["kind"].removeprefix("removed_").upper())
+            for marker in result.get("removedMarkers", [])
+        }
+        active_bs = {
+            (marker["time"], marker["text"])
+            for marker in result["markers"]
+            if marker["text"] in {"B", "S"}
+        }
+        if not removed_markers:
+            raise RuntimeError(f"{symbol} did not expose any withdrawn B/S markers.")
+        overlap = active_bs & removed_markers
+        if overlap:
+            raise RuntimeError(
+                f"{symbol} exposes active markers as withdrawn: {sorted(overlap)}"
+            )
         bs_sequence = [
             marker["text"]
             for marker in sorted(result["markers"], key=lambda marker: marker["time"])
@@ -74,6 +92,7 @@ def main() -> None:
         print(
             f"{symbol}: {len(result['bars'])} bars / "
             f"{len(result['markers'])} markers / {len(result['numbers'])} numbers"
+            f" / {len(removed_markers)} withdrawn"
         )
 
     print("Demo data and formula runtime verification passed.")

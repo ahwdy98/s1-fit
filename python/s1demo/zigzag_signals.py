@@ -11,7 +11,10 @@ from .auxiliary_signals import (
     generate_formula_auxiliary_signals,
 )
 from .signals import append_signal, build_signal_reason
-from .monotonic_zigzag import generate_monotonic_candidates
+from .monotonic_zigzag import (
+    generate_monotonic_candidates,
+    generate_restricted_monotonic_candidates,
+)
 
 
 @dataclass(frozen=True)
@@ -62,7 +65,12 @@ def generate_zigzag_signals(
     s_kind = np.full(len(out), "", dtype=object)
 
     if config.monotonic_markers:
-        for candidate in generate_monotonic_candidates(
+        candidate_generator = (
+            generate_restricted_monotonic_candidates
+            if config.formula_auxiliary_profile == "restricted-formula"
+            else generate_monotonic_candidates
+        )
+        for candidate in candidate_generator(
             out,
             buy_threshold=config.buy_reversal,
             sell_threshold=config.sell_reversal,
@@ -123,7 +131,10 @@ def generate_zigzag_signals(
     out["is_s"] = is_s
     auxiliary_buy_trigger = is_b
     auxiliary_sell_trigger = is_s
-    if config.monotonic_markers:
+    if (
+        config.monotonic_markers
+        and config.formula_auxiliary_profile != "restricted-formula"
+    ):
         auxiliary_buy_trigger, auxiliary_sell_trigger = _legacy_filtered_candidates(
             out, close, config
         )
@@ -673,8 +684,9 @@ def _validate_config(config: ZigZagSignalConfig) -> None:
         "causal",
         "causal-formula",
         "causal-fit",
+        "restricted-formula",
     }:
         raise ValueError(
             "formula_auxiliary_profile must be exact, generalized, causal, "
-            "causal-formula, or causal-fit."
+            "causal-formula, causal-fit, or restricted-formula."
         )

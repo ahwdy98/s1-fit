@@ -5,6 +5,7 @@ import json
 
 import pandas as pd
 
+from .monotonic_zigzag import generate_removed_restricted_candidates
 from .zigzag_signals import ZigZagSignalConfig, generate_zigzag_signals
 
 
@@ -33,7 +34,7 @@ def calculate(payload: dict[str, object]) -> dict[str, object]:
             max_confirmation_bars=None,
             monotonic_markers=True,
             auxiliary_mode="formula",
-            formula_auxiliary_profile="exact",
+            formula_auxiliary_profile="restricted-formula",
         ),
     )
     bars = []
@@ -94,7 +95,26 @@ def calculate(payload: dict[str, object]) -> dict[str, object]:
                     "direction": direction,
                 }
             )
-    return {"bars": bars, "markers": markers, "numbers": numbers}
+    removed_markers = []
+    for candidate in generate_removed_restricted_candidates(frame):
+        day = pd.Timestamp(frame.iloc[candidate.marker]["date"]).date().isoformat()
+        removed_markers.append(
+            {
+                "time": day,
+                "position": "belowBar" if candidate.side == "B" else "aboveBar",
+                "color": "#78909c" if candidate.side == "B" else "#9e7777",
+                "shape": "circle",
+                "text": f"{candidate.side}×",
+                "kind": f"removed_{candidate.side.lower()}",
+            }
+        )
+    return {
+        "bars": bars,
+        "markers": markers,
+        "removedMarkers": removed_markers,
+        "numbers": numbers,
+        "formulaProfile": "restricted-formula",
+    }
 
 
 def calculate_json(payload_json: str) -> str:

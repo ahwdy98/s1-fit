@@ -40,10 +40,12 @@
   <main>
     <div class="toolbar">
       <label>股票代码<input id="symbol" list="symbols" value="AAPL" autocomplete="off"><datalist id="symbols"></datalist></label>
+      <label>开始日期<input id="start-date" type="date"></label>
       <label>截止日期<input id="end-date" type="date"></label>
       <button id="run" disabled>计算</button>
       <div class="layers">
         <label><input id="show-signals" type="checkbox" checked>B/S/IB/E</label>
+        <label><input id="show-removed" type="checkbox">已撤回 B/S</label>
         <label><input id="show-numbers" type="checkbox" checked>连续数字</label>
       </div>
       <span id="status">正在初始化 Python...</span>
