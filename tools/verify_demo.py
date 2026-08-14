@@ -20,6 +20,8 @@ EXPECTED_MARKERS = {
 def main() -> None:
     sys.path.insert(0, str(PYTHON_ROOT))
     from s1demo import calculate_json
+    from s1demo.monotonic_zigzag import generate_restricted_monotonic_candidates
+    from s1demo.runtime import _frame_from_payload
 
     manifest = json.loads((ROOT / "data" / "manifest.json").read_text("utf-8"))
     shards = sorted((ROOT / "data" / "shards").glob("*.json.gz"))
@@ -89,6 +91,27 @@ def main() -> None:
         ]
         if any(left == right == "S" for left, right in zip(bs_sequence, bs_sequence[1:])):
             raise RuntimeError(f"{symbol} contains repeated S markers without a B.")
+        frame = _frame_from_payload(payload)
+        previous: set[tuple[int, str]] = set()
+        removed: set[tuple[int, str]] = set()
+        for stop in range(4, len(frame) + 1):
+            current = {
+                (candidate.marker, candidate.side)
+                for candidate in generate_restricted_monotonic_candidates(
+                    frame.iloc[:stop]
+                )
+            }
+            historical_new = {
+                marker for marker in current - previous if marker[0] < stop - 1
+            }
+            restored = current & removed
+            if historical_new or restored:
+                raise RuntimeError(
+                    f"{symbol} backfilled or restored B/S markers: "
+                    f"new={sorted(historical_new)}, restored={sorted(restored)}"
+                )
+            removed.update(previous - current)
+            previous = current
         print(
             f"{symbol}: {len(result['bars'])} bars / "
             f"{len(result['markers'])} markers / {len(result['numbers'])} numbers"
