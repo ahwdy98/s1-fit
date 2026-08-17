@@ -19,6 +19,8 @@
     input, button { height: 36px; border: 1px solid #cbd3dc; background: #fff; border-radius: 5px; padding: 0 10px; font: inherit; }
     #symbol { width: 150px; text-transform: uppercase; }
     button { cursor: pointer; color: #fff; background: #1565c0; border-color: #1565c0; font-weight: 600; }
+    button.secondary { color: #1f5c45; background: #fff; border-color: #6aa78f; }
+    button.secondary:hover:not(:disabled) { background: #edf7f2; }
     button:disabled { cursor: wait; opacity: .55; }
     .layers { display: flex; gap: 12px; align-items: center; min-height: 36px; }
     .layers label { display: flex; gap: 5px; align-items: center; color: #37424e; }
@@ -43,6 +45,7 @@
       <label>开始日期<input id="start-date" type="date"></label>
       <label>截止日期<input id="end-date" type="date"></label>
       <button id="run" disabled>计算</button>
+      <button id="load-latest" class="secondary" disabled>读取最新行情</button>
       <div class="layers">
         <label><input id="show-signals" type="checkbox" checked>B/S/IB/E</label>
         <label><input id="show-removed" type="checkbox">已撤回 B/S</label>
@@ -52,7 +55,7 @@
     </div>
     <div id="chart"></div>
   </main>
-  <footer>数据仅用于公式演示，不构成投资建议。静态站点不会上传股票选择或行情数据。</footer>
+  <footer>数据仅用于公式演示，不构成投资建议。在线行情由浏览器直接读取，不会上传股票选择或行情数据。</footer>
   <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://cdn.jsdelivr.net/pyodide/v0.27.7/full/pyodide.js"></script>
   <script type="module" src="./web/app.js"></script>
